@@ -120,11 +120,17 @@ export function resolveRelatedSlug(
   ref: string,
   wikiRoot: string,
 ): string | null {
-  // Path-like → resolve relative to project root (one segment up
-  // from wikiRoot).
+  // Path-like refs may be project-relative (`wiki/...`) or
+  // wiki-relative (`queries/...`). Keep all resolution inside wiki/.
   if (ref.includes("/")) {
+    const normalizedRef = ref.replace(/\\/g, "/").replace(/^\/+/, "")
+    const withExtension = normalizedRef.endsWith(".md")
+      ? normalizedRef
+      : `${normalizedRef}.md`
     const projectRoot = wikiRoot.replace(/\/wiki$/, "")
-    const target = `${projectRoot}/${ref}`
+    const target = withExtension.startsWith("wiki/")
+      ? `${projectRoot}/${withExtension}`
+      : `${wikiRoot}/${withExtension}`
     const found = findInTreeByPath(index, target)
     return found && found.includes(`${wikiRoot}/`) ? found : null
   }

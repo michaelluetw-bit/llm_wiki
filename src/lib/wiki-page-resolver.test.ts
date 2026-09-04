@@ -193,6 +193,12 @@ describe("resolveRelatedSlug", () => {
     expect(resolveRelatedSlug(INDEX, "foo.md", WIKI)).toBe(`${WIKI}/entities/foo.md`)
   })
 
+  it("accepts a wiki-relative path without the wiki prefix", () => {
+    expect(resolveRelatedSlug(INDEX, "queries/what-is-foo", WIKI)).toBe(
+      `${WIKI}/queries/what-is-foo.md`,
+    )
+  })
+
   it("accepts a project-relative wiki path", () => {
     expect(resolveRelatedSlug(INDEX, "wiki/entities/foo.md", WIKI)).toBe(
       `${WIKI}/entities/foo.md`,
