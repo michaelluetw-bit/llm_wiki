@@ -21,6 +21,7 @@ import {
   ensureBrokenLinkStub,
   requestLintRepairSync,
   resolveLintRepairContext,
+  runWithRepairMirrorSync,
   rewriteWikilinkTarget,
   stubRelativePathFromBrokenTarget,
   type LintRepairContext,
@@ -172,6 +173,26 @@ describe("lint repair bridge", () => {
       "/source",
       ["/source/wiki/concepts/orphan.md"],
     )
+    expect(sync).toHaveBeenCalledWith(context)
+  })
+
+  it("syncs earlier canonical mutations when a later batch operation fails", async () => {
+    const context: LintRepairContext = {
+      projectRoot: "/sidecar",
+      mutationRoot: "/source",
+      bridge: { version: 1, sourceRoot: "/source" },
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+
+    await expect(runWithRepairMirrorSync(
+      context,
+      async (markChanged) => {
+        markChanged()
+        throw new Error("later file failed")
+      },
+      sync,
+    )).rejects.toThrow(/later file failed/i)
+
     expect(sync).toHaveBeenCalledWith(context)
   })
 

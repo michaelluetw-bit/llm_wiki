@@ -61,6 +61,21 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+export async function runWithRepairMirrorSync<T>(
+  context: LintRepairContext,
+  mutate: (markChanged: () => void) => Promise<T>,
+  requestRepairSync: (context: LintRepairContext) => Promise<void> = requestLintRepairSync,
+): Promise<T> {
+  let changed = false
+  try {
+    return await mutate(() => { changed = true })
+  } finally {
+    if (changed && context.bridge) {
+      await requestRepairSync(context)
+    }
+  }
+}
+
 interface DeleteOrphanWithRepairBridgeDeps {
   resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
   cascadeDelete?: typeof cascadeDeleteWikiPagesWithRefs
