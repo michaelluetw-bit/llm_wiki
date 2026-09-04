@@ -11,6 +11,7 @@ import { makeQueryFileName } from "@/lib/wiki-filename"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { useReviewStore } from "@/stores/review-store"
 import { stripBodyWikilinkPathPrefixes } from "./page-merge"
+import { requestLintRepairSync, resolveLintRepairContext, type LintRepairContext } from "./lint-fixes"
 
 const MAX_RESEARCH_SOURCES = 20
 const MIN_RESEARCH_CONTENT_CHARS = 120
@@ -48,6 +49,40 @@ export function buildResearchPageContent(
     references,
     "",
   ].join("\n"))
+}
+
+interface PersistResearchPageDeps {
+  resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
+  requestRepairSync?: (context: LintRepairContext) => Promise<void>
+  write?: (path: string, contents: string) => Promise<void>
+  exists?: (path: string) => Promise<boolean>
+}
+
+export async function persistResearchPage(
+  projectPath: string,
+  fileName: string,
+  content: string,
+  deps: PersistResearchPageDeps = {},
+): Promise<{ filePath: string; savedPath: string }> {
+  const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
+  const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
+  const write = deps.write ?? writeFile
+  const exists = deps.exists ?? fileExists
+
+  const context = await resolveRepairContext(projectPath)
+  const filePath = await makeAvailableResearchFilePath(
+    `${context.mutationRoot}/wiki/queries`,
+    fileName,
+    exists,
+  )
+  await write(filePath, content)
+  await requestRepairSync(context)
+
+  const savedFileName = filePath.split(/[\\/]/).pop() || fileName
+  return {
+    filePath,
+    savedPath: `wiki/queries/${savedFileName}`,
+  }
 }
 
 export async function makeAvailableResearchFilePath(
@@ -492,7 +527,6 @@ async function executeResearch(
 
     const { fileName, date } = makeDeepResearchFileName(topic)
     const taskFileName = addResearchTaskDiscriminator(fileName, taskId)
-    const filePath = await makeAvailableResearchFilePath(`${pp}/wiki/queries`, taskFileName)
 
     // Persist only sources cited by the synthesis. Search providers can return
     // broad candidates; listing every candidate makes unused, off-topic hits
@@ -511,8 +545,11 @@ async function executeResearch(
       references,
     )
 
-    await writeFile(filePath, pageContent)
-    const savedPath = filePath.slice(`${pp}/`.length)
+    const { filePath, savedPath } = await persistResearchPage(
+      pp,
+      taskFileName,
+      pageContent,
+    )
 
     if (!updateTaskIfActive(pp, taskId, {
       status: "done",
