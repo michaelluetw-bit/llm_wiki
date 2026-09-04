@@ -1258,14 +1258,19 @@ impl AgentRuntime {
                 }
             }
         } else {
-            if references.is_empty() {
+            let cli_handoff = self.llm_config.as_ref().is_some_and(|config| {
+                matches!(config.provider.as_str(), "claude-code" | "codex-cli")
+                    && !config.model.trim().is_empty()
+            });
+            if references.is_empty() && !cli_handoff {
                 return Err(
                     "Backend Agent LLM is not configured or the selected Chat model is unavailable. Check Settings > Models and try again."
                         .to_string(),
                 );
             }
-            // Preserve the retrieval-only API behavior, but never expose
-            // router diagnostics as assistant prose when no generator exists.
+            // CLI transports generate the final answer in the frontend after
+            // this retrieval handoff, so an empty result set is still valid.
+            // Preserve the retrieval-only API behavior for all other callers.
             build_retrieval_answer(message, &references)
         };
         emit_event(
@@ -4108,6 +4113,57 @@ mod tests {
 
         assert!(error.contains("Chat model is unavailable"));
         assert!(!error.contains("Router intent="));
+    }
+
+    #[tokio::test]
+    async fn cli_transports_allow_zero_reference_retrieval_handoff() {
+        for provider in ["codex-cli", "claude-code"] {
+            let project = temp_project(provider);
+            let config = LlmConfig {
+                provider: provider.to_string(),
+                api_key: String::new(),
+                model: "test-model".to_string(),
+                ollama_url: String::new(),
+                custom_endpoint: String::new(),
+                azure_api_version: None,
+                azure_model_family: None,
+                api_mode: None,
+                reasoning: None,
+                max_tokens: None,
+                max_context_size: Some(200_000),
+                custom_headers: Default::default(),
+                streaming_enabled: Some(true),
+            };
+            let runtime = AgentRuntime::new(
+                "project-1",
+                project.to_string_lossy(),
+                None,
+                Some(config),
+                None,
+                None,
+            );
+
+            let response = runtime
+                .run_once(AgentChatRequest {
+                    message: "a query with no matching project pages".to_string(),
+                    session_id: Some("s1".to_string()),
+                    mode: AgentMode::Standard,
+                    tools: AgentToolOptions {
+                        wiki: true,
+                        web: false,
+                        anytxt: false,
+                    },
+                    ..Default::default()
+                })
+                .await
+                .expect("CLI transports must receive an empty retrieval handoff");
+
+            assert!(response.ok, "provider={provider}");
+            assert!(response.references.is_empty(), "provider={provider}");
+            assert!(response
+                .message
+                .contains("did not find matching wiki pages"));
+        }
     }
 
     #[tokio::test]
