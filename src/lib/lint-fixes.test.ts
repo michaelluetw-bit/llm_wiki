@@ -4,6 +4,10 @@ const projectStoreMocks = vi.hoisted(() => ({
   loadRepairBridgeSourceRoot: vi.fn(),
 }))
 
+const embeddingMocks = vi.hoisted(() => ({
+  removePageEmbedding: vi.fn(),
+}))
+
 const fsMocks = vi.hoisted(() => ({
   createDirectory: vi.fn(),
   deleteFile: vi.fn(),
@@ -13,11 +17,14 @@ const fsMocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/commands/fs", () => fsMocks)
+vi.mock("@/lib/embedding", () => embeddingMocks)
 vi.mock("@/lib/project-store", () => projectStoreMocks)
 
 import {
   appendWikilink,
   deleteOrphanWithRepairBridge,
+  repairBrokenLinkWithRepairBridge,
+  repairMirrorSyncRequired,
   ensureBrokenLinkStub,
   requestLintRepairSync,
   resolveLintRepairContext,
@@ -29,6 +36,8 @@ import {
 
 beforeEach(() => {
   projectStoreMocks.loadRepairBridgeSourceRoot.mockReset()
+  embeddingMocks.removePageEmbedding.mockReset()
+  embeddingMocks.removePageEmbedding.mockResolvedValue(undefined)
   projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue(null)
   fsMocks.createDirectory.mockReset()
   fsMocks.deleteFile.mockReset()
@@ -160,8 +169,10 @@ describe("lint repair bridge", () => {
       mutationRoot: "/source",
       bridge: { version: 1, sourceRoot: "/source" },
     }
-    const cascade = vi.fn().mockResolvedValue({ deletedPaths: [], rewrittenFiles: 0 })
+    const pagePath = "/source/wiki/concepts/orphan.md"
+    const cascade = vi.fn().mockResolvedValue({ deletedPaths: [pagePath], rewrittenFiles: 0 })
     const sync = vi.fn().mockResolvedValue(undefined)
+    fsMocks.fileExists.mockResolvedValue(false)
 
     await deleteOrphanWithRepairBridge("/sidecar", "concepts/orphan.md", {
       resolveRepairContext: vi.fn().mockResolvedValue(context),
@@ -169,10 +180,49 @@ describe("lint repair bridge", () => {
       requestRepairSync: sync,
     })
 
-    expect(cascade).toHaveBeenCalledWith(
-      "/source",
-      ["/source/wiki/concepts/orphan.md"],
-    )
+    expect(cascade).toHaveBeenCalledWith("/source", [pagePath])
+    expect(embeddingMocks.removePageEmbedding).toHaveBeenCalledWith("/sidecar", "orphan")
+    expect(sync).toHaveBeenCalledWith(context)
+  })
+
+  it("syncs an already-applied bridged batch even when no new write is needed", () => {
+    const context: LintRepairContext = {
+      projectRoot: "/sidecar",
+      mutationRoot: "/source",
+      bridge: { version: 1, sourceRoot: "/source" },
+    }
+
+    expect(repairMirrorSyncRequired(context, 2)).toBe(true)
+    expect(repairMirrorSyncRequired({ ...context, bridge: null, mutationRoot: "/sidecar" }, 2)).toBe(false)
+  })
+
+  it("syncs a created stub when the source rewrite fails", async () => {
+    const context: LintRepairContext = {
+      projectRoot: "/sidecar",
+      mutationRoot: "/source",
+      bridge: { version: 1, sourceRoot: "/source" },
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const ensureStub = vi.fn().mockResolvedValue({
+      fullPath: "/source/wiki/queries/missing.md",
+      relativePath: "queries/missing.md",
+      created: true,
+    })
+    const write = vi.fn().mockRejectedValue(new Error("source write failed"))
+
+    await expect(repairBrokenLinkWithRepairBridge(
+      context,
+      "concepts/source.md",
+      "missing",
+      undefined,
+      {
+        read: vi.fn().mockResolvedValue("See [[missing]]."),
+        write,
+        ensureStub,
+        requestRepairSync: sync,
+      },
+    )).rejects.toThrow(/source write failed/i)
+
     expect(sync).toHaveBeenCalledWith(context)
   })
 

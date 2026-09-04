@@ -26,6 +26,8 @@ import {
   appendWikilink,
   deleteOrphanWithRepairBridge,
   ensureBrokenLinkStub,
+  repairBrokenLinkWithRepairBridge,
+  repairMirrorSyncRequired,
   requestLintRepairSync,
   resolveLintRepairContext,
   runWithRepairMirrorSync,
@@ -282,15 +284,13 @@ export function LintView() {
         }
 
         case "broken-link": {
-          const pagePath = `${repairRoot}/wiki/${item.page}`
-          if (item.brokenTarget && item.suggestedTarget) {
-            const content = await readFile(pagePath)
-            await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, item.suggestedTarget))
-            filesystemChanged = true
-          } else if (item.brokenTarget) {
-            const content = await readFile(pagePath)
-            const stub = await ensureBrokenLinkStub(repairRoot, item.brokenTarget)
-            await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, stub.relativePath))
+          if (item.brokenTarget) {
+            await repairBrokenLinkWithRepairBridge(
+              repairContext,
+              item.page,
+              item.brokenTarget,
+              item.suggestedTarget,
+            )
             filesystemChanged = true
           } else {
             addLintItemToReview(item)
@@ -317,7 +317,7 @@ export function LintView() {
         }
       }
 
-      if (filesystemChanged && repairContext.bridge) {
+      if (filesystemChanged && repairContext.bridge && item.type !== "broken-link") {
         await requestLintRepairSync(repairContext)
       }
       useLintStore.getState().removeItem(item.id)
@@ -463,6 +463,9 @@ export function LintView() {
             const fixedIds = pending.map((edit) => edit.id)
             if (repairContext.bridge) fixedAfterSync.push(...fixedIds)
             else removeLintItems(fixedIds)
+          }
+          if (repairMirrorSyncRequired(repairContext, fixedAfterSync.length)) {
+            markChanged()
           }
           return fixedAfterSync
         },

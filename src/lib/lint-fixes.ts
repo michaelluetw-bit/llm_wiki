@@ -1,6 +1,7 @@
 import { createDirectory, deleteFile, fileExists, readFile, writeFile } from "@/commands/fs"
-import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { getFileName, getFileStem, isAbsolutePath, normalizePath } from "@/lib/path-utils"
 import { loadRepairBridgeSourceRoot } from "@/lib/project-store"
+import { removePageEmbedding } from "@/lib/embedding"
 import { cascadeDeleteWikiPagesWithRefs } from "@/lib/wiki-page-delete"
 import { makeQuerySlug } from "@/lib/wiki-filename"
 
@@ -76,9 +77,51 @@ export async function runWithRepairMirrorSync<T>(
   }
 }
 
+export function repairMirrorSyncRequired(
+  context: LintRepairContext,
+  completedItems: number,
+): boolean {
+  return context.bridge !== null && completedItems > 0
+}
+
+interface RepairBrokenLinkWithRepairBridgeDeps {
+  read?: typeof readFile
+  write?: typeof writeFile
+  ensureStub?: typeof ensureBrokenLinkStub
+  requestRepairSync?: (context: LintRepairContext) => Promise<void>
+}
+
+export async function repairBrokenLinkWithRepairBridge(
+  context: LintRepairContext,
+  page: string,
+  brokenTarget: string,
+  suggestedTarget?: string,
+  deps: RepairBrokenLinkWithRepairBridgeDeps = {},
+): Promise<boolean> {
+  const read = deps.read ?? readFile
+  const write = deps.write ?? writeFile
+  const ensureStub = deps.ensureStub ?? ensureBrokenLinkStub
+  const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
+  const pagePath = `${context.mutationRoot}/wiki/${page}`
+
+  return runWithRepairMirrorSync(context, async (markSyncNeeded) => {
+    const content = await read(pagePath)
+    let target = suggestedTarget
+    if (!target) {
+      const stub = await ensureStub(context.mutationRoot, brokenTarget)
+      target = stub.relativePath
+      if (stub.created) markSyncNeeded()
+    }
+    await write(pagePath, rewriteWikilinkTarget(content, brokenTarget, target))
+    markSyncNeeded()
+    return true
+  }, requestRepairSync)
+}
+
 interface DeleteOrphanWithRepairBridgeDeps {
   resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
   cascadeDelete?: typeof cascadeDeleteWikiPagesWithRefs
+  removeEmbedding?: typeof removePageEmbedding
   requestRepairSync?: (context: LintRepairContext) => Promise<void>
 }
 
@@ -89,11 +132,24 @@ export async function deleteOrphanWithRepairBridge(
 ): Promise<void> {
   const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
   const cascadeDelete = deps.cascadeDelete ?? cascadeDeleteWikiPagesWithRefs
+  const removeEmbedding = deps.removeEmbedding ?? removePageEmbedding
   const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
   const context = await resolveRepairContext(projectPath)
   const pagePath = `${context.mutationRoot}/wiki/${page}`
-  await cascadeDelete(context.mutationRoot, [pagePath])
-  await requestRepairSync(context)
+  const result = await cascadeDelete(context.mutationRoot, [pagePath])
+  if (!context.bridge) return
+
+  const targetMissing = !(await fileExists(pagePath))
+  const syncRequired = targetMissing || result.deletedPaths.length > 0 || result.rewrittenFiles > 0
+  if (!syncRequired) return
+
+  await runWithRepairMirrorSync(context, async (markSyncNeeded) => {
+    markSyncNeeded()
+    if (targetMissing) {
+      const slug = getFileStem(pagePath)
+      if (slug) await removeEmbedding(context.projectRoot, slug)
+    }
+  }, requestRepairSync)
 }
 
 export async function requestLintRepairSync(context: LintRepairContext): Promise<void> {
