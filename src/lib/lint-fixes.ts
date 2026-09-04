@@ -1,5 +1,7 @@
 import { createDirectory, deleteFile, fileExists, readFile, writeFile } from "@/commands/fs"
 import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { loadRepairBridgeSourceRoot } from "@/lib/project-store"
+import { cascadeDeleteWikiPagesWithRefs } from "@/lib/wiki-page-delete"
 import { makeQuerySlug } from "@/lib/wiki-filename"
 
 export interface LintRepairBridge {
@@ -46,6 +48,10 @@ export async function resolveLintRepairContext(projectPath: string): Promise<Lin
   if (!(await fileExists(`${sourceRoot}/wiki`))) {
     throw new Error("Invalid lint repair bridge config: source wiki does not exist")
   }
+  const trustedSourceRoot = await loadRepairBridgeSourceRoot(projectRoot)
+  if (!trustedSourceRoot || normalizedRoot(trustedSourceRoot) !== sourceRoot) {
+    throw new Error("Invalid lint repair bridge config: sourceRoot is not trusted by app state")
+  }
 
   const bridge: LintRepairBridge = { version: 1, sourceRoot }
   return { projectRoot, mutationRoot: sourceRoot, bridge }
@@ -53,6 +59,26 @@ export async function resolveLintRepairContext(projectPath: string): Promise<Lin
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+interface DeleteOrphanWithRepairBridgeDeps {
+  resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
+  cascadeDelete?: typeof cascadeDeleteWikiPagesWithRefs
+  requestRepairSync?: (context: LintRepairContext) => Promise<void>
+}
+
+export async function deleteOrphanWithRepairBridge(
+  projectPath: string,
+  page: string,
+  deps: DeleteOrphanWithRepairBridgeDeps = {},
+): Promise<void> {
+  const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
+  const cascadeDelete = deps.cascadeDelete ?? cascadeDeleteWikiPagesWithRefs
+  const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
+  const context = await resolveRepairContext(projectPath)
+  const pagePath = `${context.mutationRoot}/wiki/${page}`
+  await cascadeDelete(context.mutationRoot, [pagePath])
+  await requestRepairSync(context)
 }
 
 export async function requestLintRepairSync(context: LintRepairContext): Promise<void> {

@@ -24,6 +24,7 @@ import { normalizePath } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import {
   appendWikilink,
+  deleteOrphanWithRepairBridge,
   ensureBrokenLinkStub,
   requestLintRepairSync,
   resolveLintRepairContext,
@@ -337,7 +338,6 @@ export function LintView() {
   async function handleDeleteOrphan(item: LintItem) {
     if (!project) return
     const pp = normalizePath(project.path)
-    const pagePath = `${pp}/wiki/${item.page}`
     const confirmed = await appDialog.confirm({
       message: t("lint.deleteOrphanConfirm", { page: item.page }),
       variant: "destructive",
@@ -351,10 +351,7 @@ export function LintView() {
       // means no incoming wikilinks were detected, `related:` slugs
       // and index.md entries can still point at it — the orphan
       // detector only walks body refs.
-      const { cascadeDeleteWikiPagesWithRefs } = await import(
-        "@/lib/wiki-page-delete"
-      )
-      await cascadeDeleteWikiPagesWithRefs(pp, [pagePath])
+      await deleteOrphanWithRepairBridge(pp, item.page)
       useLintStore.getState().removeItem(item.id)
       await refreshProjectFileTree(pp, {
         projectId: project.id,

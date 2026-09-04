@@ -63,7 +63,7 @@ export async function persistResearchPage(
   fileName: string,
   content: string,
   deps: PersistResearchPageDeps = {},
-): Promise<{ filePath: string; savedPath: string }> {
+): Promise<{ filePath: string; savedPath: string; syncError?: string }> {
   const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
   const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
   const write = deps.write ?? writeFile
@@ -76,12 +76,18 @@ export async function persistResearchPage(
     exists,
   )
   await write(filePath, content)
-  await requestRepairSync(context)
+  let syncError: string | undefined
+  try {
+    await requestRepairSync(context)
+  } catch (error) {
+    syncError = error instanceof Error ? error.message : String(error)
+  }
 
   const savedFileName = filePath.split(/[\\/]/).pop() || fileName
   return {
     filePath,
     savedPath: `wiki/queries/${savedFileName}`,
+    ...(syncError ? { syncError } : {}),
   }
 }
 
@@ -545,7 +551,7 @@ async function executeResearch(
       references,
     )
 
-    const { filePath, savedPath } = await persistResearchPage(
+    const { filePath, savedPath, syncError } = await persistResearchPage(
       pp,
       taskFileName,
       pageContent,
@@ -554,6 +560,9 @@ async function executeResearch(
     if (!updateTaskIfActive(pp, taskId, {
       status: "done",
       savedPath,
+      error: syncError
+        ? `Saved to the canonical Wiki, but the read-only mirror rebuild failed: ${syncError}`
+        : null,
     })) return
     resolveReviewForSavedResearch(pp, taskId, savedPath)
 

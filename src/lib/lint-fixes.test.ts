@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+const projectStoreMocks = vi.hoisted(() => ({
+  loadRepairBridgeSourceRoot: vi.fn(),
+}))
+
 const fsMocks = vi.hoisted(() => ({
   createDirectory: vi.fn(),
   deleteFile: vi.fn(),
@@ -9,17 +13,22 @@ const fsMocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/commands/fs", () => fsMocks)
+vi.mock("@/lib/project-store", () => projectStoreMocks)
 
 import {
   appendWikilink,
+  deleteOrphanWithRepairBridge,
   ensureBrokenLinkStub,
   requestLintRepairSync,
   resolveLintRepairContext,
   rewriteWikilinkTarget,
   stubRelativePathFromBrokenTarget,
+  type LintRepairContext,
 } from "./lint-fixes"
 
 beforeEach(() => {
+  projectStoreMocks.loadRepairBridgeSourceRoot.mockReset()
+  projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue(null)
   fsMocks.createDirectory.mockReset()
   fsMocks.deleteFile.mockReset()
   fsMocks.fileExists.mockReset()
@@ -114,7 +123,8 @@ describe("lint repair bridge", () => {
     })
   })
 
-  it("redirects a configured read-only repair to the canonical source root", async () => {
+  it("redirects a trusted read-only repair to the canonical source root", async () => {
+    projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue("/source")
     fsMocks.fileExists.mockImplementation(async (path: string) =>
       path === "/sidecar/.llm-wiki/repair-bridge.json" || path === "/source/wiki")
     fsMocks.readFile.mockResolvedValue(JSON.stringify({ version: 1, sourceRoot: "/source" }))
@@ -126,12 +136,43 @@ describe("lint repair bridge", () => {
     })
   })
 
+  it("rejects a project-controlled bridge that is not trusted by app state", async () => {
+    projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue("/trusted-source")
+    fsMocks.fileExists.mockImplementation(async (path: string) =>
+      path === "/sidecar/.llm-wiki/repair-bridge.json" || path === "/unrelated/wiki")
+    fsMocks.readFile.mockResolvedValue(JSON.stringify({ version: 1, sourceRoot: "/unrelated" }))
+
+    await expect(resolveLintRepairContext("/sidecar")).rejects.toThrow(/trusted/i)
+  })
+
   it("fails closed when a repair bridge exists but points to an invalid source", async () => {
     fsMocks.fileExists.mockImplementation(async (path: string) =>
       path === "/sidecar/.llm-wiki/repair-bridge.json")
     fsMocks.readFile.mockResolvedValue(JSON.stringify({ version: 1, sourceRoot: "relative/source" }))
 
     await expect(resolveLintRepairContext("/sidecar")).rejects.toThrow(/repair bridge/i)
+  })
+
+  it("deletes bridged orphans from the canonical Wiki and rebuilds the mirror", async () => {
+    const context: LintRepairContext = {
+      projectRoot: "/sidecar",
+      mutationRoot: "/source",
+      bridge: { version: 1, sourceRoot: "/source" },
+    }
+    const cascade = vi.fn().mockResolvedValue({ deletedPaths: [], rewrittenFiles: 0 })
+    const sync = vi.fn().mockResolvedValue(undefined)
+
+    await deleteOrphanWithRepairBridge("/sidecar", "concepts/orphan.md", {
+      resolveRepairContext: vi.fn().mockResolvedValue(context),
+      cascadeDelete: cascade,
+      requestRepairSync: sync,
+    })
+
+    expect(cascade).toHaveBeenCalledWith(
+      "/source",
+      ["/source/wiki/concepts/orphan.md"],
+    )
+    expect(sync).toHaveBeenCalledWith(context)
   })
 
   it("queues an immediate mirror rebuild and waits for its success result", async () => {
