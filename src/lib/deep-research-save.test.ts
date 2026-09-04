@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { canIndexSavedResearch, persistResearchPage } from "./deep-research"
+import { canIndexSavedResearch, persistResearchPage, researchSaveTaskPatch, retryResearchMirrorSync } from "./deep-research"
 import type { LintRepairContext } from "./lint-fixes"
 
 describe("persistResearchPage", () => {
@@ -101,5 +101,41 @@ describe("research indexing after save", () => {
 
   it("indexes when the mirror rebuild succeeded", () => {
     expect(canIndexSavedResearch()).toBe(true)
+  })
+})
+
+
+describe("research mirror sync recovery", () => {
+  it("keeps a mirror-sync failure retryable instead of marking the task done", () => {
+    expect(researchSaveTaskPatch("wiki/queries/research-topic.md", "sync failed")).toEqual({
+      status: "error",
+      savedPath: "wiki/queries/research-topic.md",
+      syncPending: true,
+      error: "Saved to the canonical Wiki, but the read-only mirror rebuild failed: sync failed",
+    })
+  })
+
+  it("retries only the mirror rebuild for an already-saved research page", async () => {
+    const context: LintRepairContext = {
+      projectRoot: "/sidecar",
+      mutationRoot: "/source",
+      bridge: { version: 1, sourceRoot: "/source" },
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const exists = vi.fn().mockResolvedValue(true)
+
+    await expect(retryResearchMirrorSync(
+      "/sidecar",
+      "wiki/queries/research-topic.md",
+      {
+        resolveRepairContext: vi.fn().mockResolvedValue(context),
+        requestRepairSync: sync,
+        exists,
+      },
+    )).resolves.toBeUndefined()
+
+    expect(sync).toHaveBeenCalledOnce()
+    expect(sync).toHaveBeenCalledWith(context)
+    expect(exists).toHaveBeenCalledWith("/sidecar/wiki/queries/research-topic.md")
   })
 })

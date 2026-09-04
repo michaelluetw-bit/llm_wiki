@@ -1,5 +1,5 @@
 import { createDirectory, deleteFile, fileExists, readFile, writeFile } from "@/commands/fs"
-import { getFileName, getFileStem, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { getFileName, getFileStem, isAbsolutePath, normalizePath, pathComparisonKey } from "@/lib/path-utils"
 import { loadRepairBridgeSourceRoot } from "@/lib/project-store"
 import { removePageEmbedding } from "@/lib/embedding"
 import { cascadeDeleteWikiPagesWithRefs } from "@/lib/wiki-page-delete"
@@ -43,14 +43,14 @@ export async function resolveLintRepairContext(projectPath: string): Promise<Lin
   }
 
   const sourceRoot = normalizedRoot(candidate.sourceRoot)
-  if (!isAbsolutePath(sourceRoot) || sourceRoot === projectRoot) {
+  if (!isAbsolutePath(sourceRoot) || pathComparisonKey(sourceRoot) === pathComparisonKey(projectRoot)) {
     throw new Error("Invalid lint repair bridge config: sourceRoot must be a separate absolute path")
   }
   if (!(await fileExists(`${sourceRoot}/wiki`))) {
     throw new Error("Invalid lint repair bridge config: source wiki does not exist")
   }
   const trustedSourceRoot = await loadRepairBridgeSourceRoot(projectRoot)
-  if (!trustedSourceRoot || normalizedRoot(trustedSourceRoot) !== sourceRoot) {
+  if (!trustedSourceRoot || pathComparisonKey(trustedSourceRoot) !== pathComparisonKey(sourceRoot)) {
     throw new Error("Invalid lint repair bridge config: sourceRoot is not trusted by app state")
   }
 

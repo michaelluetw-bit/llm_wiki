@@ -98,3 +98,19 @@ describe("project-store custom LLM preset normalization", () => {
     ])
   })
 })
+
+
+describe("project-store repair bridge trust lookup", () => {
+  it("matches Windows mirror keys case-insensitively while preserving the source path", () => {
+    const lookup = (__projectStoreTest as unknown as {
+      lookupRepairBridgeSourceRoot?: (sources: Record<string, unknown>, projectPath: string) => string | null
+    }).lookupRepairBridgeSourceRoot
+
+    expect(lookup).toBeTypeOf("function")
+    if (!lookup) return
+    expect(lookup(
+      { "C:/Wiki/Mirror": "D:/Canonical/WikiSource" },
+      "c:\\wiki\\mirror",
+    )).toBe("D:/Canonical/WikiSource")
+  })
+})

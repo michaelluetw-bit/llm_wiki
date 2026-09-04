@@ -146,6 +146,19 @@ describe("lint repair bridge", () => {
     })
   })
 
+  it("accepts trusted Windows repair roots case-insensitively", async () => {
+    projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue("D:/Canonical")
+    fsMocks.fileExists.mockImplementation(async (path: string) =>
+      path === "c:/wiki/mirror/.llm-wiki/repair-bridge.json" || path === "d:/canonical/wiki")
+    fsMocks.readFile.mockResolvedValue(JSON.stringify({ version: 1, sourceRoot: "d:/canonical" }))
+
+    await expect(resolveLintRepairContext("c:\\wiki\\mirror")).resolves.toEqual({
+      projectRoot: "c:/wiki/mirror",
+      mutationRoot: "d:/canonical",
+      bridge: { version: 1, sourceRoot: "d:/canonical" },
+    })
+  })
+
   it("rejects a project-controlled bridge that is not trusted by app state", async () => {
     projectStoreMocks.loadRepairBridgeSourceRoot.mockResolvedValue("/trusted-source")
     fsMocks.fileExists.mockImplementation(async (path: string) =>
