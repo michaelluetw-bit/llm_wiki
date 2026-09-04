@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { persistResearchPage } from "./deep-research"
+import { canIndexSavedResearch, persistResearchPage } from "./deep-research"
 import type { LintRepairContext } from "./lint-fixes"
 
 describe("persistResearchPage", () => {
@@ -90,5 +90,16 @@ describe("persistResearchPage without repair bridge", () => {
       "/project/wiki/queries/research-topic.md",
       "# Research",
     )
+  })
+})
+
+
+describe("research indexing after save", () => {
+  it("skips indexing until a failed mirror rebuild is repaired", () => {
+    expect(canIndexSavedResearch("sync failed")).toBe(false)
+  })
+
+  it("indexes when the mirror rebuild succeeded", () => {
+    expect(canIndexSavedResearch()).toBe(true)
   })
 })

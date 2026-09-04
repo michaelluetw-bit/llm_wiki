@@ -91,6 +91,10 @@ export async function persistResearchPage(
   }
 }
 
+export function canIndexSavedResearch(syncError?: string): boolean {
+  return !syncError
+}
+
 export async function makeAvailableResearchFilePath(
   directory: string,
   fileName: string,
@@ -576,7 +580,7 @@ async function executeResearch(
     // directly. This keeps freshly generated research available to hybrid
     // search without recreating the review-amplifying ingest loop.
     const embeddingConfig = useWikiStore.getState().embeddingConfig
-    if (embeddingConfig.enabled && embeddingConfig.model) {
+    if (canIndexSavedResearch(syncError) && embeddingConfig.enabled && embeddingConfig.model) {
       try {
         const { embedPage } = await import("@/lib/embedding")
         await embedPage(pp, researchPageIdFromPath(filePath), `Research: ${topic}`, pageContent, embeddingConfig)
