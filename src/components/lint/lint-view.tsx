@@ -24,7 +24,13 @@ import { normalizePath } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import {
   appendWikilink,
+  deleteOrphanWithRepairBridge,
   ensureBrokenLinkStub,
+  repairBrokenLinkWithRepairBridge,
+  repairMirrorSyncRequired,
+  requestLintRepairSync,
+  resolveLintRepairContext,
+  runWithRepairMirrorSync,
   rewriteWikilinkTarget,
 } from "@/lib/lint-fixes"
 import { useTranslation } from "react-i18next"
@@ -260,54 +266,61 @@ export function LintView() {
     setFixError(null)
 
     try {
+      const repairContext = await resolveLintRepairContext(pp)
+      const repairRoot = repairContext.mutationRoot
+      let filesystemChanged = false
+
       switch (item.type) {
         case "orphan": {
           if (item.suggestedSource) {
-            const sourcePath = `${pp}/wiki/${item.suggestedSource}`
+            const sourcePath = `${repairRoot}/wiki/${item.suggestedSource}`
             const content = await readFile(sourcePath)
             await writeFile(sourcePath, appendWikilink(content, item.page))
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         case "broken-link": {
-          const pagePath = `${pp}/wiki/${item.page}`
-          if (item.brokenTarget && item.suggestedTarget) {
-            const content = await readFile(pagePath)
-            await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, item.suggestedTarget))
-          } else if (item.brokenTarget) {
-            const content = await readFile(pagePath)
-            const stub = await ensureBrokenLinkStub(pp, item.brokenTarget)
-            await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, stub.relativePath))
+          if (item.brokenTarget) {
+            await repairBrokenLinkWithRepairBridge(
+              repairContext,
+              item.page,
+              item.brokenTarget,
+              item.suggestedTarget,
+            )
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         case "no-outlinks": {
           if (item.suggestedTarget) {
-            const pagePath = `${pp}/wiki/${item.page}`
+            const pagePath = `${repairRoot}/wiki/${item.page}`
             const content = await readFile(pagePath)
             await writeFile(pagePath, appendWikilink(content, item.suggestedTarget))
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         default: {
           // Semantic issues → send to Review for manual resolution
           addLintItemToReview(item)
-          useLintStore.getState().removeItem(item.id)
           break
         }
       }
+
+      if (filesystemChanged && repairContext.bridge && item.type !== "broken-link") {
+        await requestLintRepairSync(repairContext)
+      }
+      useLintStore.getState().removeItem(item.id)
 
       if (refreshTree) {
         await refreshProjectFileTree(pp, {
@@ -326,7 +339,6 @@ export function LintView() {
   async function handleDeleteOrphan(item: LintItem) {
     if (!project) return
     const pp = normalizePath(project.path)
-    const pagePath = `${pp}/wiki/${item.page}`
     const confirmed = await appDialog.confirm({
       message: t("lint.deleteOrphanConfirm", { page: item.page }),
       variant: "destructive",
@@ -340,10 +352,7 @@ export function LintView() {
       // means no incoming wikilinks were detected, `related:` slugs
       // and index.md entries can still point at it — the orphan
       // detector only walks body refs.
-      const { cascadeDeleteWikiPagesWithRefs } = await import(
-        "@/lib/wiki-page-delete"
-      )
-      await cascadeDeleteWikiPagesWithRefs(pp, [pagePath])
+      await deleteOrphanWithRepairBridge(pp, item.page)
       useLintStore.getState().removeItem(item.id)
       await refreshProjectFileTree(pp, {
         projectId: project.id,
@@ -408,41 +417,60 @@ export function LintView() {
     const pp = normalizePath(project.path)
     let filesystemChanged = false
     try {
-      const edits = new Map<string, Array<{ id: string; apply: (content: string) => string }>>()
-      const queueEdit = (path: string, id: string, apply: (content: string) => string) => {
-        const pending = edits.get(path) ?? []
-        pending.push({ id, apply })
-        edits.set(path, pending)
-      }
+      const repairContext = await resolveLintRepairContext(pp)
+      const repairRoot = repairContext.mutationRoot
+      const bridgedFixedIds = await runWithRepairMirrorSync(
+        repairContext,
+        async (markChanged) => {
+          const edits = new Map<string, Array<{ id: string; apply: (content: string) => string }>>()
+          const fixedAfterSync: string[] = []
+          const queueEdit = (path: string, id: string, apply: (content: string) => string) => {
+            const pending = edits.get(path) ?? []
+            pending.push({ id, apply })
+            edits.set(path, pending)
+          }
 
-      for (const item of selectedLintItems) {
-        if (item.type === "orphan" && item.suggestedSource) {
-          queueEdit(`${pp}/wiki/${item.suggestedSource}`, item.id, (content) => appendWikilink(content, item.page))
-        } else if (item.type === "no-outlinks" && item.suggestedTarget) {
-          queueEdit(`${pp}/wiki/${item.page}`, item.id, (content) => appendWikilink(content, item.suggestedTarget!))
-        } else if (item.type === "broken-link" && item.brokenTarget) {
-          const stub = item.suggestedTarget ? null : await ensureBrokenLinkStub(pp, item.brokenTarget)
-          if (stub) filesystemChanged = true
-          const target = item.suggestedTarget ?? stub!.relativePath
-          queueEdit(`${pp}/wiki/${item.page}`, item.id, (content) =>
-            rewriteWikilinkTarget(content, item.brokenTarget!, target))
-        } else {
-          addLintItemToReview(item)
-          removeLintItems([item.id])
-        }
-      }
+          for (const item of selectedLintItems) {
+            if (item.type === "orphan" && item.suggestedSource) {
+              queueEdit(`${repairRoot}/wiki/${item.suggestedSource}`, item.id, (content) => appendWikilink(content, item.page))
+            } else if (item.type === "no-outlinks" && item.suggestedTarget) {
+              queueEdit(`${repairRoot}/wiki/${item.page}`, item.id, (content) => appendWikilink(content, item.suggestedTarget!))
+            } else if (item.type === "broken-link" && item.brokenTarget) {
+              const stub = item.suggestedTarget ? null : await ensureBrokenLinkStub(repairRoot, item.brokenTarget)
+              if (stub?.created) {
+                filesystemChanged = true
+                markChanged()
+              }
+              const target = item.suggestedTarget ?? stub!.relativePath
+              queueEdit(`${repairRoot}/wiki/${item.page}`, item.id, (content) =>
+                rewriteWikilinkTarget(content, item.brokenTarget!, target))
+            } else {
+              addLintItemToReview(item)
+              removeLintItems([item.id])
+            }
+          }
 
-      // Multiple findings can target the same page. Apply their transforms in
-      // memory and write that page once, avoiding lost updates and N full reads.
-      for (const [path, pending] of edits) {
-        const original = await readFile(path)
-        const updated = pending.reduce((content, edit) => edit.apply(content), original)
-        if (updated !== original) {
-          await writeFile(path, updated)
-          filesystemChanged = true
-        }
-        removeLintItems(pending.map((edit) => edit.id))
-      }
+          // Multiple findings can target the same page. Apply their transforms in
+          // memory and write that page once, avoiding lost updates and N full reads.
+          for (const [path, pending] of edits) {
+            const original = await readFile(path)
+            const updated = pending.reduce((content, edit) => edit.apply(content), original)
+            if (updated !== original) {
+              await writeFile(path, updated)
+              filesystemChanged = true
+              markChanged()
+            }
+            const fixedIds = pending.map((edit) => edit.id)
+            if (repairContext.bridge) fixedAfterSync.push(...fixedIds)
+            else removeLintItems(fixedIds)
+          }
+          if (repairMirrorSyncRequired(repairContext, fixedAfterSync.length)) {
+            markChanged()
+          }
+          return fixedAfterSync
+        },
+      )
+      if (bridgedFixedIds.length > 0) removeLintItems(bridgedFixedIds)
       setSelectedLintIds(new Set())
     } catch (err) {
       console.error("Batch fix failed:", err)

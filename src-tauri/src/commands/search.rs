@@ -267,17 +267,25 @@ fn get_page_links_inner(project_path: &str, file_path: &str) -> Result<PageLinks
     })
 }
 
-/// Mirror `resolveRelatedSlug` in the frontend reader. Path-shaped links must
-/// match their project-relative path exactly; bare links resolve by exact
-/// filename after adding `.md`. Deliberately avoid title and fuzzy aliases so
-/// the links panel never claims a target that the rendered page cannot open.
+/// Mirror `resolveRelatedSlug` in the frontend reader. Path-shaped links may
+/// be project-relative (`wiki/...`) or wiki-relative (`queries/...`); bare
+/// links resolve by exact filename after adding `.md`. Deliberately avoid
+/// title and fuzzy aliases so the links panel never claims a target that the
+/// rendered page cannot open.
 fn resolve_reader_wikilink<'a>(
     pages: &'a BTreeMap<String, GraphPage>,
     link: &str,
 ) -> Option<&'a String> {
     let link = link.trim().replace('\\', "/");
     if link.contains('/') {
-        return pages.get_key_value(&link).map(|(path, _)| path);
+        let mut path = link.trim_start_matches('/').to_string();
+        if !path.starts_with("wiki/") {
+            path = format!("wiki/{path}");
+        }
+        if !path.ends_with(".md") {
+            path.push_str(".md");
+        }
+        return pages.get_key_value(&path).map(|(path, _)| path);
     }
     let filename = if link.ends_with(".md") {
         link
@@ -2147,6 +2155,31 @@ mod tests {
             .missing
             .iter()
             .any(|entry| entry.title == "Title Only"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn page_links_resolve_wiki_relative_path_targets_without_false_missing() {
+        let root = tmp_project();
+        write_page(
+            &root,
+            "wiki/queries/current.md",
+            "# Current\n\n[[queries/ai-assistant]]\n<!-- llm-wiki-graph-compat\n[[ai-assistant]]\n-->",
+        );
+        write_page(&root, "wiki/queries/ai-assistant.md", "# AI Assistant");
+
+        let links = get_page_links_inner(
+            root.to_str().unwrap(),
+            root.join("wiki/queries/current.md").to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(links.outgoing.len(), 1);
+        assert_eq!(
+            links.outgoing[0].path.as_deref(),
+            Some("wiki/queries/ai-assistant.md")
+        );
+        assert!(links.missing.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

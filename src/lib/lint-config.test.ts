@@ -14,6 +14,24 @@ describe("lint config", () => {
       ignoreOrphan: true,
       ignoreNoOutlinks: false,
       ignorePages: ["alpha", "beta", "folder/gamma.md"],
+      ignoreBrokenLinkPrefixes: [],
+    })
+  })
+
+  it("trims ignored broken-link prefixes before removing wiki root", () => {
+    expect(normalizeLintConfig({
+      ignoreBrokenLinkPrefixes: [" wiki/raw/ "],
+    }).ignoreBrokenLinkPrefixes).toEqual(["raw/"])
+  })
+
+  it("normalizes ignored broken-link prefixes without allowing empty entries", () => {
+    expect(normalizeLintConfig({
+      ignoreBrokenLinkPrefixes: [" raw/ ", "wiki/raw/", "RAW/", ""],
+    })).toEqual({
+      ignoreOrphan: false,
+      ignoreNoOutlinks: false,
+      ignorePages: [],
+      ignoreBrokenLinkPrefixes: ["raw/"],
     })
   })
 })

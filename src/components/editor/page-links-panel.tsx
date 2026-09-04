@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { CornerUpLeft, FileQuestion, Link2, Loader2, Plus, Sparkles, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { createMissingWikiPage, getPageLinks, readFile, type PageLinkEntry, type PageLinksResponse } from "@/commands/fs"
+import { getPageLinks, readFile, type PageLinkEntry, type PageLinksResponse } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 import { useWikiStore } from "@/stores/wiki-store"
 import { streamChat } from "@/lib/llm-client"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { normalizeSelectionReplacement } from "@/lib/selection-edit"
+import { createMissingWikiPageWithRepairBridge } from "@/lib/page-links-create"
 
 const EMPTY_LINKS: PageLinksResponse = { outgoing: [], backlinks: [], missing: [] }
 
@@ -86,7 +87,7 @@ export function PageLinksPanel({ filePath, onClose }: { filePath: string; onClos
           ),
         )
       }
-      const relativePath = await createMissingWikiPage(project.path, entry.title, content)
+      const relativePath = await createMissingWikiPageWithRepairBridge(project.path, entry.title, content)
       if (controller.signal.aborted) return
       await refreshProjectFileTree(project.path, { bumpDataVersion: true })
       if (controller.signal.aborted) return

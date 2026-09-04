@@ -8,6 +8,7 @@ import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
 const STORE_NAME = "app-state.json"
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
+const REPAIR_BRIDGE_SOURCES_KEY = "repairBridgeSources"
 
 async function getStore() {
   return load(STORE_NAME, { autoSave: true, defaults: {} })
@@ -29,6 +30,16 @@ export async function saveLastProject(project: WikiProject): Promise<void> {
   const store = await getStore()
   await store.set(LAST_PROJECT_KEY, project)
   await addToRecentProjects(project)
+}
+
+export async function loadRepairBridgeSourceRoot(projectPath: string): Promise<string | null> {
+  const store = await getStore()
+  const sources = await store.get<Record<string, unknown>>(REPAIR_BRIDGE_SOURCES_KEY)
+  if (!sources || typeof sources !== "object" || Array.isArray(sources)) return null
+  const projectRoot = normalizePath(projectPath).replace(/\/+$/, "")
+  const value = sources[projectRoot]
+  if (typeof value !== "string" || !value.trim()) return null
+  return normalizePath(value).replace(/\/+$/, "")
 }
 
 export async function addToRecentProjects(

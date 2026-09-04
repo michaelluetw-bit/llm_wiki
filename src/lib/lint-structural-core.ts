@@ -20,6 +20,7 @@ export interface StructuralLintConfig {
   ignoreOrphan?: boolean
   ignoreNoOutlinks?: boolean
   ignorePages?: string[]
+  ignoreBrokenLinkPrefixes?: string[]
 }
 
 interface IndexedPage extends StructuralLintPage {
@@ -180,6 +181,9 @@ export function computeStructuralLint(
 
   const results: StructuralLintFinding[] = []
   const ignoredPages = new Set((config.ignorePages ?? []).map(normalizeTarget).filter(Boolean))
+  const ignoredBrokenLinkPrefixes = [...new Set(
+    (config.ignoreBrokenLinkPrefixes ?? []).map(normalizeTarget).filter(Boolean),
+  )]
   pages.forEach((page, pageIndex) => {
     // Ignore entries are slugs/paths. Do not match a bare basename against
     // every nested page with that name ("foo" must not hide "archive/foo").
@@ -205,8 +209,10 @@ export function computeStructuralLint(
       })
     }
     for (const link of ignored ? [] : page.outlinks) {
+      const normalizedLink = normalizeTarget(link)
+      if (ignoredBrokenLinkPrefixes.some((prefix) => normalizedLink.startsWith(prefix))) continue
       const basename = fileName(link).replace(/\.md$/i, "")
-      if (slugMap.has(normalizeTarget(link)) || slugMap.has(normalizeTarget(basename))) continue
+      if (slugMap.has(normalizedLink) || slugMap.has(normalizeTarget(basename))) continue
       results.push({
         type: "broken-link",
         severity: "warning",

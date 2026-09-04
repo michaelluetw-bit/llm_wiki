@@ -57,6 +57,28 @@ describe("computeStructuralLint", () => {
     expect(findings.some((finding) => finding.type === "broken-link" && finding.brokenTarget === "folder/ignored")).toBe(false)
   })
 
+  it("ignores configured broken-link target prefixes without hiding real broken links", () => {
+    const pages = [
+      {
+        ...page(0, 1),
+        shortName: "source.md",
+        slug: "source",
+        outlinks: [
+          "raw/2026/07/19/example/article.md",
+          "wiki/raw/2026/07/20/other/article.md",
+          "missing-page",
+        ],
+      },
+    ]
+
+    const findings = computeStructuralLint(pages, undefined, {
+      ignoreBrokenLinkPrefixes: ["raw/"],
+    }).filter((finding) => finding.type === "broken-link")
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0].brokenTarget).toBe("missing-page")
+  })
+
   it("does not apply a top-level ignored slug to same-named nested pages", () => {
     const pages = [
       { ...page(0, 2), shortName: "foo.md", slug: "foo", outlinks: [] },

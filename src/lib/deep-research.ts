@@ -11,6 +11,7 @@ import { makeQueryFileName } from "@/lib/wiki-filename"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { useReviewStore } from "@/stores/review-store"
 import { stripBodyWikilinkPathPrefixes } from "./page-merge"
+import { requestLintRepairSync, resolveLintRepairContext, type LintRepairContext } from "./lint-fixes"
 
 const MAX_RESEARCH_SOURCES = 20
 const MIN_RESEARCH_CONTENT_CHARS = 120
@@ -48,6 +49,50 @@ export function buildResearchPageContent(
     references,
     "",
   ].join("\n"))
+}
+
+interface PersistResearchPageDeps {
+  resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
+  requestRepairSync?: (context: LintRepairContext) => Promise<void>
+  write?: (path: string, contents: string) => Promise<void>
+  exists?: (path: string) => Promise<boolean>
+}
+
+export async function persistResearchPage(
+  projectPath: string,
+  fileName: string,
+  content: string,
+  deps: PersistResearchPageDeps = {},
+): Promise<{ filePath: string; savedPath: string; syncError?: string }> {
+  const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
+  const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
+  const write = deps.write ?? writeFile
+  const exists = deps.exists ?? fileExists
+
+  const context = await resolveRepairContext(projectPath)
+  const filePath = await makeAvailableResearchFilePath(
+    `${context.mutationRoot}/wiki/queries`,
+    fileName,
+    exists,
+  )
+  await write(filePath, content)
+  let syncError: string | undefined
+  try {
+    await requestRepairSync(context)
+  } catch (error) {
+    syncError = error instanceof Error ? error.message : String(error)
+  }
+
+  const savedFileName = filePath.split(/[\\/]/).pop() || fileName
+  return {
+    filePath,
+    savedPath: `wiki/queries/${savedFileName}`,
+    ...(syncError ? { syncError } : {}),
+  }
+}
+
+export function canIndexSavedResearch(syncError?: string): boolean {
+  return !syncError
 }
 
 export async function makeAvailableResearchFilePath(
@@ -492,7 +537,6 @@ async function executeResearch(
 
     const { fileName, date } = makeDeepResearchFileName(topic)
     const taskFileName = addResearchTaskDiscriminator(fileName, taskId)
-    const filePath = await makeAvailableResearchFilePath(`${pp}/wiki/queries`, taskFileName)
 
     // Persist only sources cited by the synthesis. Search providers can return
     // broad candidates; listing every candidate makes unused, off-topic hits
@@ -511,12 +555,18 @@ async function executeResearch(
       references,
     )
 
-    await writeFile(filePath, pageContent)
-    const savedPath = filePath.slice(`${pp}/`.length)
+    const { filePath, savedPath, syncError } = await persistResearchPage(
+      pp,
+      taskFileName,
+      pageContent,
+    )
 
     if (!updateTaskIfActive(pp, taskId, {
       status: "done",
       savedPath,
+      error: syncError
+        ? `Saved to the canonical Wiki, but the read-only mirror rebuild failed: ${syncError}`
+        : null,
     })) return
     resolveReviewForSavedResearch(pp, taskId, savedPath)
 
@@ -530,7 +580,7 @@ async function executeResearch(
     // directly. This keeps freshly generated research available to hybrid
     // search without recreating the review-amplifying ingest loop.
     const embeddingConfig = useWikiStore.getState().embeddingConfig
-    if (embeddingConfig.enabled && embeddingConfig.model) {
+    if (canIndexSavedResearch(syncError) && embeddingConfig.enabled && embeddingConfig.model) {
       try {
         const { embedPage } = await import("@/lib/embedding")
         await embedPage(pp, researchPageIdFromPath(filePath), `Research: ${topic}`, pageContent, embeddingConfig)

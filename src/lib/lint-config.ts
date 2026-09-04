@@ -5,12 +5,21 @@ export interface LintConfig {
   ignoreOrphan: boolean
   ignoreNoOutlinks: boolean
   ignorePages: string[]
+  ignoreBrokenLinkPrefixes: string[]
 }
 
 export const DEFAULT_LINT_CONFIG: LintConfig = {
   ignoreOrphan: false,
   ignoreNoOutlinks: false,
   ignorePages: [],
+  ignoreBrokenLinkPrefixes: [],
+}
+
+function normalizeBrokenLinkPrefix(value: string): string {
+  return value.trim()
+    .replace(/\\/g, "/")
+    .replace(/^wiki\//i, "")
+    .toLowerCase()
 }
 
 export function normalizeLintConfig(config?: Partial<LintConfig> | null): LintConfig {
@@ -20,6 +29,10 @@ export function normalizeLintConfig(config?: Partial<LintConfig> | null): LintCo
     ignorePages: [...new Set((config?.ignorePages ?? [])
       .flatMap((value) => value.split(/[,，\n]/))
       .map((value) => value.trim())
+      .filter(Boolean))],
+    ignoreBrokenLinkPrefixes: [...new Set((config?.ignoreBrokenLinkPrefixes ?? [])
+      .flatMap((value) => value.split(/[,，\n]/))
+      .map(normalizeBrokenLinkPrefix)
       .filter(Boolean))],
   }
 }
