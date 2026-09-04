@@ -1,6 +1,95 @@
-import { createDirectory, fileExists, writeFile } from "@/commands/fs"
-import { getFileName, normalizePath } from "@/lib/path-utils"
+import { createDirectory, deleteFile, fileExists, readFile, writeFile } from "@/commands/fs"
+import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
 import { makeQuerySlug } from "@/lib/wiki-filename"
+
+export interface LintRepairBridge {
+  version: 1
+  sourceRoot: string
+}
+
+export interface LintRepairContext {
+  projectRoot: string
+  mutationRoot: string
+  bridge: LintRepairBridge | null
+}
+
+function normalizedRoot(path: string): string {
+  return normalizePath(path).replace(/\/+$/, "")
+}
+
+export async function resolveLintRepairContext(projectPath: string): Promise<LintRepairContext> {
+  const projectRoot = normalizedRoot(projectPath)
+  const bridgePath = `${projectRoot}/.llm-wiki/repair-bridge.json`
+  if (!(await fileExists(bridgePath))) {
+    return { projectRoot, mutationRoot: projectRoot, bridge: null }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(bridgePath))
+  } catch (error) {
+    throw new Error(`Invalid lint repair bridge config: ${String(error)}`)
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid lint repair bridge config: expected object")
+  }
+  const candidate = parsed as { version?: unknown; sourceRoot?: unknown }
+  if (candidate.version !== 1 || typeof candidate.sourceRoot !== "string") {
+    throw new Error("Invalid lint repair bridge config: unsupported schema")
+  }
+
+  const sourceRoot = normalizedRoot(candidate.sourceRoot)
+  if (!isAbsolutePath(sourceRoot) || sourceRoot === projectRoot) {
+    throw new Error("Invalid lint repair bridge config: sourceRoot must be a separate absolute path")
+  }
+  if (!(await fileExists(`${sourceRoot}/wiki`))) {
+    throw new Error("Invalid lint repair bridge config: source wiki does not exist")
+  }
+
+  const bridge: LintRepairBridge = { version: 1, sourceRoot }
+  return { projectRoot, mutationRoot: sourceRoot, bridge }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+export async function requestLintRepairSync(context: LintRepairContext): Promise<void> {
+  if (!context.bridge) return
+
+  const requestId = crypto.randomUUID()
+  const runtimeRoot = `${context.projectRoot}/.llm-wiki`
+  const requestPath = `${runtimeRoot}/repair-queue/${requestId}.request`
+  const resultPath = `${runtimeRoot}/repair-results/${requestId}.json`
+  await writeFile(requestPath, JSON.stringify({ sourceRoot: context.bridge.sourceRoot }))
+
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (await fileExists(resultPath)) {
+      let result: unknown
+      try {
+        result = JSON.parse(await readFile(resultPath))
+      } finally {
+        try {
+          await deleteFile(resultPath)
+        } catch {
+          // Best-effort cleanup; the sync result itself is authoritative.
+        }
+      }
+      if (!result || typeof result !== "object" || (result as { ok?: unknown }).ok !== true) {
+        const error = result && typeof result === "object"
+          ? (result as { error?: unknown }).error
+          : null
+        throw new Error(`Read-only mirror rebuild failed${error ? `: ${String(error)}` : ""}`)
+      }
+      return
+    }
+    await delay(100)
+  }
+
+  throw new Error("Repair was written to the canonical Wiki, but the read-only mirror rebuild timed out")
+}
 
 export function lintLinkTarget(target: string): string {
   return normalizePath(target)

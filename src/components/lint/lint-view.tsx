@@ -25,6 +25,8 @@ import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import {
   appendWikilink,
   ensureBrokenLinkStub,
+  requestLintRepairSync,
+  resolveLintRepairContext,
   rewriteWikilinkTarget,
 } from "@/lib/lint-fixes"
 import { useTranslation } from "react-i18next"
@@ -260,54 +262,63 @@ export function LintView() {
     setFixError(null)
 
     try {
+      const repairContext = await resolveLintRepairContext(pp)
+      const repairRoot = repairContext.mutationRoot
+      let filesystemChanged = false
+
       switch (item.type) {
         case "orphan": {
           if (item.suggestedSource) {
-            const sourcePath = `${pp}/wiki/${item.suggestedSource}`
+            const sourcePath = `${repairRoot}/wiki/${item.suggestedSource}`
             const content = await readFile(sourcePath)
             await writeFile(sourcePath, appendWikilink(content, item.page))
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         case "broken-link": {
-          const pagePath = `${pp}/wiki/${item.page}`
+          const pagePath = `${repairRoot}/wiki/${item.page}`
           if (item.brokenTarget && item.suggestedTarget) {
             const content = await readFile(pagePath)
             await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, item.suggestedTarget))
+            filesystemChanged = true
           } else if (item.brokenTarget) {
             const content = await readFile(pagePath)
-            const stub = await ensureBrokenLinkStub(pp, item.brokenTarget)
+            const stub = await ensureBrokenLinkStub(repairRoot, item.brokenTarget)
             await writeFile(pagePath, rewriteWikilinkTarget(content, item.brokenTarget, stub.relativePath))
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         case "no-outlinks": {
           if (item.suggestedTarget) {
-            const pagePath = `${pp}/wiki/${item.page}`
+            const pagePath = `${repairRoot}/wiki/${item.page}`
             const content = await readFile(pagePath)
             await writeFile(pagePath, appendWikilink(content, item.suggestedTarget))
+            filesystemChanged = true
           } else {
             addLintItemToReview(item)
           }
-          useLintStore.getState().removeItem(item.id)
           break
         }
 
         default: {
           // Semantic issues → send to Review for manual resolution
           addLintItemToReview(item)
-          useLintStore.getState().removeItem(item.id)
           break
         }
       }
+
+      if (filesystemChanged && repairContext.bridge) {
+        await requestLintRepairSync(repairContext)
+      }
+      useLintStore.getState().removeItem(item.id)
 
       if (refreshTree) {
         await refreshProjectFileTree(pp, {
@@ -408,7 +419,10 @@ export function LintView() {
     const pp = normalizePath(project.path)
     let filesystemChanged = false
     try {
+      const repairContext = await resolveLintRepairContext(pp)
+      const repairRoot = repairContext.mutationRoot
       const edits = new Map<string, Array<{ id: string; apply: (content: string) => string }>>()
+      const bridgedFixedIds: string[] = []
       const queueEdit = (path: string, id: string, apply: (content: string) => string) => {
         const pending = edits.get(path) ?? []
         pending.push({ id, apply })
@@ -417,14 +431,14 @@ export function LintView() {
 
       for (const item of selectedLintItems) {
         if (item.type === "orphan" && item.suggestedSource) {
-          queueEdit(`${pp}/wiki/${item.suggestedSource}`, item.id, (content) => appendWikilink(content, item.page))
+          queueEdit(`${repairRoot}/wiki/${item.suggestedSource}`, item.id, (content) => appendWikilink(content, item.page))
         } else if (item.type === "no-outlinks" && item.suggestedTarget) {
-          queueEdit(`${pp}/wiki/${item.page}`, item.id, (content) => appendWikilink(content, item.suggestedTarget!))
+          queueEdit(`${repairRoot}/wiki/${item.page}`, item.id, (content) => appendWikilink(content, item.suggestedTarget!))
         } else if (item.type === "broken-link" && item.brokenTarget) {
-          const stub = item.suggestedTarget ? null : await ensureBrokenLinkStub(pp, item.brokenTarget)
+          const stub = item.suggestedTarget ? null : await ensureBrokenLinkStub(repairRoot, item.brokenTarget)
           if (stub) filesystemChanged = true
           const target = item.suggestedTarget ?? stub!.relativePath
-          queueEdit(`${pp}/wiki/${item.page}`, item.id, (content) =>
+          queueEdit(`${repairRoot}/wiki/${item.page}`, item.id, (content) =>
             rewriteWikilinkTarget(content, item.brokenTarget!, target))
         } else {
           addLintItemToReview(item)
@@ -441,7 +455,14 @@ export function LintView() {
           await writeFile(path, updated)
           filesystemChanged = true
         }
-        removeLintItems(pending.map((edit) => edit.id))
+        const fixedIds = pending.map((edit) => edit.id)
+        if (repairContext.bridge) bridgedFixedIds.push(...fixedIds)
+        else removeLintItems(fixedIds)
+      }
+      if (repairContext.bridge && bridgedFixedIds.length > 0) {
+        await requestLintRepairSync(repairContext)
+        filesystemChanged = true
+        removeLintItems(bridgedFixedIds)
       }
       setSelectedLintIds(new Set())
     } catch (err) {
