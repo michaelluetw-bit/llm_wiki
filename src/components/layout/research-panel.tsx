@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 import { hasActiveResearchRerun, useResearchStore, type ResearchTask } from "@/stores/research-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
-import { queueResearch, queueResearchBatch } from "@/lib/deep-research"
+import { queueResearch, queueResearchBatch, resolveReviewForSavedResearch, retryResearchMirrorSync } from "@/lib/deep-research"
 import { normalizePath } from "@/lib/path-utils"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { isImeComposing } from "@/lib/keyboard-utils"
@@ -50,13 +50,34 @@ export function ResearchPanel() {
 
   async function handleRetryResearch(task: ResearchTask) {
     if (!project) return
+    const projectPath = normalizePath(project.path)
+    if (task.syncPending && task.savedPath) {
+      useResearchStore.getState().updateTask(task.id, { status: "saving" })
+      try {
+        await retryResearchMirrorSync(projectPath, task.savedPath)
+        useResearchStore.getState().updateTask(task.id, {
+          status: "done",
+          syncPending: false,
+          error: null,
+        })
+        resolveReviewForSavedResearch(projectPath, task.id, task.savedPath)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        useResearchStore.getState().updateTask(task.id, {
+          status: "error",
+          syncPending: true,
+          error: `Saved to the canonical Wiki, but the read-only mirror rebuild failed: ${message}`,
+        })
+      }
+      return
+    }
     if (hasActiveResearchRerun(useResearchStore.getState().tasks, task.id)) return
     if (!hasConfiguredDeepResearchSources(searchApiConfig)) {
       await appDialog.alert({ message: t("research.notConfigured") })
       return
     }
     queueResearchBatch(
-      normalizePath(project.path),
+      projectPath,
       [{
         topic: task.topic,
         searchQueries: task.searchQueries,
@@ -353,7 +374,7 @@ function ResearchTaskCard({
 
           {/* Actions */}
           <div className="flex items-center gap-1.5 mt-2">
-            {task.savedPath && (
+            {task.savedPath && !task.syncPending && (
               <Button variant="outline" size="sm" className="h-6 text-[11px] gap-1" onClick={handleOpenSaved}>
                 <FileText className="h-3 w-3" />
                 {t("research.open")}

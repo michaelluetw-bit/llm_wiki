@@ -2,7 +2,7 @@ import { load } from "@tauri-apps/plugin-store"
 import type { WikiProject } from "@/types/wiki"
 import type { ApiConfig, CustomLlmPreset, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProjectLlmOverride, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, TaskModelRoutingConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
-import { normalizePath } from "@/lib/path-utils"
+import { normalizePath, pathComparisonKey } from "@/lib/path-utils"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
 
 const STORE_NAME = "app-state.json"
@@ -32,14 +32,23 @@ export async function saveLastProject(project: WikiProject): Promise<void> {
   await addToRecentProjects(project)
 }
 
+function lookupRepairBridgeSourceRoot(
+  sources: Record<string, unknown>,
+  projectPath: string,
+): string | null {
+  const projectKey = pathComparisonKey(projectPath)
+  const entry = Object.entries(sources).find(([storedPath]) =>
+    pathComparisonKey(storedPath) === projectKey)
+  const value = entry?.[1]
+  if (typeof value !== "string" || !value.trim()) return null
+  return normalizePath(value).replace(/\/+$/, "")
+}
+
 export async function loadRepairBridgeSourceRoot(projectPath: string): Promise<string | null> {
   const store = await getStore()
   const sources = await store.get<Record<string, unknown>>(REPAIR_BRIDGE_SOURCES_KEY)
   if (!sources || typeof sources !== "object" || Array.isArray(sources)) return null
-  const projectRoot = normalizePath(projectPath).replace(/\/+$/, "")
-  const value = sources[projectRoot]
-  if (typeof value !== "string" || !value.trim()) return null
-  return normalizePath(value).replace(/\/+$/, "")
+  return lookupRepairBridgeSourceRoot(sources, projectPath)
 }
 
 export async function addToRecentProjects(
@@ -250,6 +259,7 @@ function normalizeZoomLevel(level: unknown): number {
 }
 
 export const __projectStoreTest = {
+  lookupRepairBridgeSourceRoot,
   normalizeMineruConfig,
   normalizeZoomLevel,
   normalizeCustomLlmPresets,

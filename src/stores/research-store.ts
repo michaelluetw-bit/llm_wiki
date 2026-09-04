@@ -13,6 +13,7 @@ export interface ResearchTask {
   webResults: WebSearchResult[]
   synthesis: string
   savedPath: string | null
+  syncPending?: boolean
   error: string | null
   createdAt: number
 }
@@ -75,6 +76,7 @@ function createResearchTask(
     webResults: [],
     synthesis: "",
     savedPath: null,
+    syncPending: false,
     error: null,
     createdAt: Date.now(),
   }

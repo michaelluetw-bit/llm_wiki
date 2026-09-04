@@ -41,6 +41,10 @@ function caseFoldPath(normalized: string): string {
     : normalized
 }
 
+export function pathComparisonKey(path: string): string {
+  return caseFoldPath(normalizePath(path).replace(/\/+$/, ""))
+}
+
 /**
  * Get relative path from base.
  */

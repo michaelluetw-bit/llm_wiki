@@ -95,6 +95,46 @@ export function canIndexSavedResearch(syncError?: string): boolean {
   return !syncError
 }
 
+export function researchSaveTaskPatch(savedPath: string, syncError?: string): {
+  status: "done" | "error"
+  savedPath: string
+  syncPending: boolean
+  error: string | null
+} {
+  if (syncError) {
+    return {
+      status: "error",
+      savedPath,
+      syncPending: true,
+      error: `Saved to the canonical Wiki, but the read-only mirror rebuild failed: ${syncError}`,
+    }
+  }
+  return { status: "done", savedPath, syncPending: false, error: null }
+}
+
+interface RetryResearchMirrorSyncDeps {
+  resolveRepairContext?: (projectPath: string) => Promise<LintRepairContext>
+  requestRepairSync?: (context: LintRepairContext) => Promise<void>
+  exists?: (path: string) => Promise<boolean>
+}
+
+export async function retryResearchMirrorSync(
+  projectPath: string,
+  savedPath: string,
+  deps: RetryResearchMirrorSyncDeps = {},
+): Promise<void> {
+  const resolveRepairContext = deps.resolveRepairContext ?? resolveLintRepairContext
+  const requestRepairSync = deps.requestRepairSync ?? requestLintRepairSync
+  const exists = deps.exists ?? fileExists
+  const context = await resolveRepairContext(projectPath)
+  await requestRepairSync(context)
+  const mirrorPath = `${normalizePath(projectPath).replace(/\/+$/, "")}/${savedPath}`
+  if (!(await exists(mirrorPath))) {
+    throw new Error("Mirror rebuild completed but the saved research page is still unavailable")
+  }
+}
+
+
 export async function makeAvailableResearchFilePath(
   directory: string,
   fileName: string,
@@ -561,13 +601,7 @@ async function executeResearch(
       pageContent,
     )
 
-    if (!updateTaskIfActive(pp, taskId, {
-      status: "done",
-      savedPath,
-      error: syncError
-        ? `Saved to the canonical Wiki, but the read-only mirror rebuild failed: ${syncError}`
-        : null,
-    })) return
+    if (!updateTaskIfActive(pp, taskId, researchSaveTaskPatch(savedPath, syncError))) return
     resolveReviewForSavedResearch(pp, taskId, savedPath)
 
     try {
